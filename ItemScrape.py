@@ -7,16 +7,16 @@ import requests
 
 from uuid import uuid4
 from queue import Queue
-import numpy as np
 
 import concurrent.futures
 import sys
 import os
 import time
+import json
 
 class RequestScheduler():
 
-    def __init__(self, request_queue: Queue, max_wait=90, max_concurrent=10, socket_timeout=25):
+    def __init__(self, request_queue: Queue, max_wait=90, max_concurrent=10, socket_timeout=(3.05,27)):
         super().__init__()
         self._request_q = request_queue
         self._max_wait = max_wait
@@ -31,22 +31,20 @@ class RequestScheduler():
     @classmethod
     def _check_dir(self):
         if 'data' in os.listdir():
+            os.chdir('data')
             return
         os.mkdir('data')
-        os.chdir('data')
+        self._check_dir()       
     
     def run(self):
-        while self._request_q.qsize() > 0:
-            x = self._round()
-            y = np.array(x)
-            name = str(uuid4()) + '.npy'
-            if y.size > 0:
-                with open(name, 'wb') as f:
-                    np.save(f, x)
+        name = str(uuid4()) + '.json'
+        with open(name, 'wb') as f:
+            while self._request_q.qsize() > 0:
+                x = self._round()
+                if len(x) > 0: np.save(f, x)
 
     def getResponse(self, req: str) -> Response:
         try:
-            #r = urlopen(req, context=ssl.create_default_context(cafile=certifi.where()), timeout=self._socket_to)
             r = requests.get(req, timeout=self._socket_to)
             self.adjustDelay(1)
             print(f'Response from {r.url} was {r}')
@@ -77,7 +75,7 @@ class RequestScheduler():
     def send(self, reqs: list):
         print(f'\n\nprocessing requests {reqs}\n')
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            return executor.map(self.getResponse, reqs)
+            return executor.map(self.worker, reqs)
 
     def getRequests(self) -> list:
         r = []
@@ -89,32 +87,35 @@ class RequestScheduler():
     def _wait(self):
         time.sleep(self._round_wait)
 
-    def _round(self):
+    def _round(self) -> list:
         if (self._round_wait == self._max_wait):
             raise RuntimeError(f'Something is wrong, Max wait of {self._max_wait} reached.')
         
         self._wait()
         requests = self.getRequests()
-        responses = list(self.send(requests))
-        items = [x for x in responses if self.isValidItem(x)]
-        return [self.trimData(x) for x in items]
+        return [x for x in self.send(requests) if x is not None]
+
+    def worker(self, request: str) -> Union[str, None]:
+        r = self.getResponse(request)
+        if self.isValidItem(r): return trimData(r)
+        else: return None
 
     @staticmethod
-    def isValidItem(page: Response):
-        return page.text.find('<title>Not Found - Item - Classic wow database</title>') == -1
+    def isValidItem(page: Response) -> bool:
+        return page.text.find('<title>Not Found - Item - Classic wow database</title>', end=256) == -1
 
     @staticmethod
-    def trimData(page: Response):
+    def trimData(page: Response) -> (str, str):
         id = page.url.replace('https://classicdb.ch/?item=','')
         itemDiv_ID = 'tooltip' + id + '-generic'
         soup = BeautifulSoup(page.text, 'html.parser')
-        return soup.find(id=itemDiv_ID)
+        return (id, soup.find(id=itemDiv_ID))
         
 
 if __name__ == "__main__":
     urls = Queue()
 
-    for i in [1,5,7,10,14400, 14555, 22438]:
+    for i in range(1,1000):
         url = 'https://classicdb.ch/?item=' + str(i)
         urls.put(url)
 
